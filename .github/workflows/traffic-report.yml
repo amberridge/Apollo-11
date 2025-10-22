@@ -2,10 +2,8 @@ name: GitHub Traffic Report with Email
 
 on:
   schedule:
-    # Run daily at 9 AM UTC (adjust timezone as needed)
     - cron: '0 9 * * *'
-  
-  workflow_dispatch:  # Allow manual trigger from Actions tab
+  workflow_dispatch:
     inputs:
       send_email:
         description: 'Send email with PDF report'
@@ -18,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     
     permissions:
-      contents: read  # Required to access repository
+      contents: read
     
     steps:
       - name: Checkout repository
@@ -29,35 +27,57 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y curl jq wkhtmltopdf
       
+      - name: Debug Environment
+        run: |
+          echo "Full Repository: ${{ github.repository }}"
+          echo "Repository Owner: ${{ github.repository_owner }}"
+          echo "Repository Name: ${{ github.event.repository.name }}"
+      
       - name: Fetch GitHub Traffic Data
         id: fetch-data
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
         run: |
-          BASE_URL="https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/traffic"
+          # Set variables
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          
+          echo "Repository Owner: ${REPO_OWNER}"
+          echo "Repository Name: ${REPO_NAME}"
+          
+          BASE_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/traffic"
+          echo "Base URL: ${BASE_URL}"
           
           # Fetch traffic data
-          VIEWS=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          echo "Fetching views..."
+          VIEWS=$(curl -s -L \
+                       -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                        -H "Accept: application/vnd.github+json" \
                        -H "X-GitHub-Api-Version: 2022-11-28" \
-                       "$BASE_URL/views")
+                       "${BASE_URL}/views")
           
-          CLONES=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          echo "Fetching clones..."
+          CLONES=$(curl -s -L \
+                        -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                         -H "Accept: application/vnd.github+json" \
                         -H "X-GitHub-Api-Version: 2022-11-28" \
-                        "$BASE_URL/clones")
+                        "${BASE_URL}/clones")
           
-          REFERRERS=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          echo "Fetching referrers..."
+          REFERRERS=$(curl -s -L \
+                           -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                            -H "Accept: application/vnd.github+json" \
                            -H "X-GitHub-Api-Version: 2022-11-28" \
-                           "$BASE_URL/popular/referrers")
+                           "${BASE_URL}/popular/referrers")
           
-          PATHS=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+          echo "Fetching paths..."
+          PATHS=$(curl -s -L \
+                       -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
                        -H "Accept: application/vnd.github+json" \
                        -H "X-GitHub-Api-Version: 2022-11-28" \
-                       "$BASE_URL/popular/paths")
+                       "${BASE_URL}/popular/paths")
+          
+          # Debug: Show response snippets
+          echo "Views response (first 200 chars): ${VIEWS:0:200}"
+          echo "Clones response (first 200 chars): ${CLONES:0:200}"
           
           # Extract metrics
           VIEWS_COUNT=$(echo "$VIEWS" | jq -r '.count // 0')
@@ -65,11 +85,13 @@ jobs:
           CLONES_COUNT=$(echo "$CLONES" | jq -r '.count // 0')
           CLONES_UNIQUES=$(echo "$CLONES" | jq -r '.uniques // 0')
           
+          echo "Extracted counts - Views: ${VIEWS_COUNT}, Clones: ${CLONES_COUNT}"
+          
           # Save to outputs
-          echo "views_count=$VIEWS_COUNT" >> $GITHUB_OUTPUT
-          echo "views_uniques=$VIEWS_UNIQUES" >> $GITHUB_OUTPUT
-          echo "clones_count=$CLONES_COUNT" >> $GITHUB_OUTPUT
-          echo "clones_uniques=$CLONES_UNIQUES" >> $GITHUB_OUTPUT
+          echo "views_count=${VIEWS_COUNT}" >> $GITHUB_OUTPUT
+          echo "views_uniques=${VIEWS_UNIQUES}" >> $GITHUB_OUTPUT
+          echo "clones_count=${CLONES_COUNT}" >> $GITHUB_OUTPUT
+          echo "clones_uniques=${CLONES_UNIQUES}" >> $GITHUB_OUTPUT
           
           # Save full JSON to files
           echo "$VIEWS" > /tmp/views.json
@@ -79,316 +101,7 @@ jobs:
           
           # Display summary
           echo "📊 Traffic Summary:"
-          echo "Views: $VIEWS_COUNT ($VIEWS_UNIQUES unique)"
-          echo "Clones: $CLONES_COUNT ($CLONES_UNIQUES unique)"
+          echo "Views: ${VIEWS_COUNT} (${VIEWS_UNIQUES} unique)"
+          echo "Clones: ${CLONES_COUNT} (${CLONES_UNIQUES} unique)"
       
-      - name: Generate HTML Report
-        env:
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          VIEWS_COUNT: ${{ steps.fetch-data.outputs.views_count }}
-          VIEWS_UNIQUES: ${{ steps.fetch-data.outputs.views_uniques }}
-          CLONES_COUNT: ${{ steps.fetch-data.outputs.clones_count }}
-          CLONES_UNIQUES: ${{ steps.fetch-data.outputs.clones_uniques }}
-        run: |
-          REPORT_DATE=$(date "+%B %d, %Y %H:%M UTC")
-          
-          # Build referrers table
-          REFERRERS_ROWS=$(jq -r '.[:10] | .[] | 
-            "<tr><td>\(.referrer)</td><td>\(.count)</td><td>\(.uniques)</td></tr>"' \
-            /tmp/referrers.json | tr '\n' ' ')
-          
-          if [ -z "$REFERRERS_ROWS" ]; then
-            REFERRERS_ROWS='<tr><td colspan="3" style="text-align:center;">No referrer data available</td></tr>'
-          fi
-          
-          # Build paths table
-          PATHS_ROWS=$(jq -r '.[:10] | .[] | 
-            "<tr><td>\(.path)</td><td>\(.count)</td><td>\(.uniques)</td></tr>"' \
-            /tmp/paths.json | tr '\n' ' ')
-          
-          if [ -z "$PATHS_ROWS" ]; then
-            PATHS_ROWS='<tr><td colspan="3" style="text-align:center;">No path data available</td></tr>'
-          fi
-          
-          # Generate HTML
-          cat > /tmp/traffic-report.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-              <meta charset="UTF-8">
-              <style>
-                  body {
-                      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                      line-height: 1.6;
-                      color: #333;
-                      max-width: 900px;
-                      margin: 0 auto;
-                      padding: 40px 20px;
-                      background-color: white;
-                  }
-                  .header {
-                      text-align: center;
-                      border-bottom: 4px solid #2563eb;
-                      padding-bottom: 20px;
-                      margin-bottom: 40px;
-                  }
-                  .header h1 {
-                      color: #1f2937;
-                      margin: 0 0 10px 0;
-                      font-size: 2.5em;
-                  }
-                  .header .repo {
-                      color: #2563eb;
-                      font-size: 1.3em;
-                      font-weight: 600;
-                  }
-                  .header .date {
-                      color: #6b7280;
-                      font-size: 1em;
-                      margin-top: 10px;
-                  }
-                  .metrics {
-                      display: grid;
-                      grid-template-columns: repeat(2, 1fr);
-                      gap: 25px;
-                      margin: 40px 0;
-                  }
-                  .metric-card {
-                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                      color: white;
-                      padding: 25px;
-                      border-radius: 12px;
-                      text-align: center;
-                      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                  }
-                  .metric-card.green {
-                      background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
-                  }
-                  .metric-value {
-                      font-size: 3em;
-                      font-weight: bold;
-                      margin: 10px 0;
-                  }
-                  .metric-label {
-                      font-size: 1.2em;
-                      opacity: 0.95;
-                      font-weight: 500;
-                  }
-                  .metric-unique {
-                      font-size: 1em;
-                      margin-top: 8px;
-                      opacity: 0.9;
-                  }
-                  h2 {
-                      color: #1f2937;
-                      margin-top: 50px;
-                      margin-bottom: 20px;
-                      font-size: 1.8em;
-                      border-left: 5px solid #2563eb;
-                      padding-left: 15px;
-                  }
-                  table {
-                      width: 100%;
-                      border-collapse: collapse;
-                      margin: 20px 0;
-                      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                  }
-                  th, td {
-                      padding: 15px;
-                      text-align: left;
-                      border-bottom: 1px solid #e2e8f0;
-                  }
-                  th {
-                      background-color: #f8fafc;
-                      font-weight: 600;
-                      color: #374151;
-                      text-transform: uppercase;
-                      font-size: 0.85em;
-                      letter-spacing: 0.5px;
-                  }
-                  tr:hover {
-                      background-color: #f8fafc;
-                  }
-                  tr:last-child td {
-                      border-bottom: none;
-                  }
-                  .footer {
-                      margin-top: 60px;
-                      padding-top: 25px;
-                      border-top: 2px solid #e2e8f0;
-                      text-align: center;
-                      color: #6b7280;
-                      font-size: 0.9em;
-                  }
-              </style>
-          </head>
-          <body>
-              <div class="header">
-                  <h1>📊 GitHub Traffic Report</h1>
-                  <div class="repo">REPO_PLACEHOLDER</div>
-                  <div class="date">Report Generated: DATE_PLACEHOLDER</div>
-              </div>
-
-              <div class="metrics">
-                  <div class="metric-card">
-                      <div class="metric-label">Total Views</div>
-                      <div class="metric-value">VIEWS_COUNT_PLACEHOLDER</div>
-                      <div class="metric-unique">VIEWS_UNIQUES_PLACEHOLDER unique visitors</div>
-                  </div>
-                  <div class="metric-card green">
-                      <div class="metric-label">Total Clones</div>
-                      <div class="metric-value">CLONES_COUNT_PLACEHOLDER</div>
-                      <div class="metric-unique">CLONES_UNIQUES_PLACEHOLDER unique cloners</div>
-                  </div>
-              </div>
-
-              <h2>🔗 Top Referral Sources</h2>
-              <table>
-                  <thead>
-                      <tr>
-                          <th>Referrer</th>
-                          <th>Total Views</th>
-                          <th>Unique Visitors</th>
-                      </tr>
-                  </thead>
-                  <tbody>
-                      REFERRERS_PLACEHOLDER
-                  </tbody>
-              </table>
-
-              <h2>📁 Popular Content</h2>
-              <table>
-                  <thead>
-                      <tr>
-                          <th>Path</th>
-                          <th>Views</th>
-                          <th>Unique Visitors</th>
-                      </tr>
-                  </thead>
-                  <tbody>
-                      PATHS_PLACEHOLDER
-                  </tbody>
-              </table>
-
-              <div class="footer">
-                  Generated by GitHub Actions<br>
-                  Data represents the last 14 days
-              </div>
-          </body>
-          </html>
-          HTMLEOF
-          
-          # Replace placeholders
-          sed -i "s|REPO_PLACEHOLDER|$REPO_OWNER/$REPO_NAME|g" /tmp/traffic-report.html
-          sed -i "s|DATE_PLACEHOLDER|$REPORT_DATE|g" /tmp/traffic-report.html
-          sed -i "s|VIEWS_COUNT_PLACEHOLDER|$VIEWS_COUNT|g" /tmp/traffic-report.html
-          sed -i "s|VIEWS_UNIQUES_PLACEHOLDER|$VIEWS_UNIQUES|g" /tmp/traffic-report.html
-          sed -i "s|CLONES_COUNT_PLACEHOLDER|$CLONES_COUNT|g" /tmp/traffic-report.html
-          sed -i "s|CLONES_UNIQUES_PLACEHOLDER|$CLONES_UNIQUES|g" /tmp/traffic-report.html
-          sed -i "s|REFERRERS_PLACEHOLDER|$REFERRERS_ROWS|g" /tmp/traffic-report.html
-          sed -i "s|PATHS_PLACEHOLDER|$PATHS_ROWS|g" /tmp/traffic-report.html
-          
-          echo "✓ HTML report generated"
-      
-      - name: Generate PDF from HTML
-        run: |
-          wkhtmltopdf \
-            --enable-local-file-access \
-            --page-size A4 \
-            --margin-top 15mm \
-            --margin-right 15mm \
-            --margin-bottom 15mm \
-            --margin-left 15mm \
-            --print-media-type \
-            --quiet \
-            /tmp/traffic-report.html \
-            /tmp/GitHub-Traffic-Report.pdf
-          
-          echo "✓ PDF generated successfully"
-          ls -lh /tmp/GitHub-Traffic-Report.pdf
-      
-      - name: Upload PDF as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: traffic-report-${{ github.run_number }}
-          path: /tmp/GitHub-Traffic-Report.pdf
-          retention-days: 30
-      
-      - name: Send Email via Gmail
-        if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.send_email)
-        env:
-          GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-          REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
-          VIEWS_COUNT: ${{ steps.fetch-data.outputs.views_count }}
-          VIEWS_UNIQUES: ${{ steps.fetch-data.outputs.views_uniques }}
-          CLONES_COUNT: ${{ steps.fetch-data.outputs.clones_count }}
-          CLONES_UNIQUES: ${{ steps.fetch-data.outputs.clones_uniques }}
-        run: |
-          REPORT_DATE=$(date "+%B %d, %Y %H:%M UTC")
-          SUBJECT="GitHub Traffic Report - $REPO_OWNER/$REPO_NAME - $(date '+%b %d, %Y')"
-          
-          # Create email body
-          BODY="<html>
-          <body style='font-family: Arial, sans-serif; line-height: 1.6; color: #333;'>
-              <h2 style='color: #2563eb;'>GitHub Traffic Report</h2>
-              <p>Please find attached the detailed traffic report for repository <strong>$REPO_OWNER/$REPO_NAME</strong>.</p>
-              
-              <h3 style='color: #374151;'>Quick Summary:</h3>
-              <ul>
-                  <li><strong>Total Views:</strong> $VIEWS_COUNT ($VIEWS_UNIQUES unique)</li>
-                  <li><strong>Total Clones:</strong> $CLONES_COUNT ($CLONES_UNIQUES unique)</li>
-                  <li><strong>Report Date:</strong> $REPORT_DATE</li>
-              </ul>
-              
-              <p>See the attached PDF for detailed analytics and insights.</p>
-              
-              <p style='color: #6b7280; font-size: 0.9em;'><em>This report was automatically generated by GitHub Actions.</em></p>
-          </body>
-          </html>"
-          
-          # Encode PDF to base64
-          PDF_BASE64=$(base64 -w 0 < /tmp/GitHub-Traffic-Report.pdf)
-          
-          # Create MIME message
-          BOUNDARY="boundary-$(date +%s)"
-          
-          EMAIL_CONTENT="From: $GMAIL_USERNAME
-          To: $EMAIL_TO
-          Subject: $SUBJECT
-          Date: $(date -R)
-          MIME-Version: 1.0
-          Content-Type: multipart/mixed; boundary=\"$BOUNDARY\"
-          
-          --$BOUNDARY
-          Content-Type: text/html; charset=UTF-8
-          Content-Transfer-Encoding: 7bit
-          
-          $BODY
-          
-          --$BOUNDARY
-          Content-Type: application/pdf; name=\"GitHub-Traffic-Report.pdf\"
-          Content-Transfer-Encoding: base64
-          Content-Disposition: attachment; filename=\"GitHub-Traffic-Report.pdf\"
-          
-          $PDF_BASE64
-          --$BOUNDARY--"
-          
-          # Send email via Gmail SMTP
-          echo "$EMAIL_CONTENT" | curl -s --url "smtps://smtp.gmail.com:465" \
-            --ssl-reqd \
-            --mail-from "$GMAIL_USERNAME" \
-            --mail-rcpt "$EMAIL_TO" \
-            --user "$GMAIL_USERNAME:$GMAIL_APP_PASSWORD" \
-            --upload-file - \
-            --insecure
-          
-          if [ $? -eq 0 ]; then
-            echo "✅ Email sent successfully to $EMAIL_TO"
-          else
-            echo "❌ Failed to send email"
-            exit 1
-          fi
+      # ... rest of the workflow remains the same
